@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Top Gun: Arcade Edition - Final Build</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: "Courier New", Courier, monospace;
+        }
+        canvas {
+            background-color: #87CEEB; /* SKY_BLUE */
+            box-shadow: 0 0 30px rgba(255, 255, 255, 0.1);
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<script>
+/**
+ * TOP GUN: ARCADE EDITION
+ * Version: 1.5 - Plane Kill Boss Trigger Integration
+ */
+
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const WIDTH = 800;
+const HEIGHT = 600;
+const RED = "#FF0000";
+const GREEN = "#00FF00";
+const YELLOW = "#FFFF00";
+const ORANGE = "#FFA500";
+
+// --- 1. ASSET INITIALIZATION ---
+const imgF14 = new Image(); imgF14.src = "f14.png";
+const imgMiG = new Image(); imgMiG.src = "mig.png";
+const imgBoss = new Image(); imgBoss.src = "boss.png";
+const imgSplash = new Image(); imgSplash.src = "splash.png";
+
+// --- 2. DYNAMIC MUSIC SYSTEM ---
+const levelSongs = ["theme.mp3", "theme2.mp3", "theme3.mp3", "theme4.mp3", "theme5.mp3"];
+const themeMusic = new Audio();
+themeMusic.loop = true;
+themeMusic.volume = 0.5;
+
+function playSongForLevel(level) {
+    let songIndex = (level - 1) % levelSongs.length;
+    let nextSong = levelSongs[songIndex];
+    if (!themeMusic.src.includes(nextSong)) {
+        themeMusic.pause();
+        themeMusic.src = nextSong;
+        themeMusic.load();
+        themeMusic.play().catch(e => console.warn("Audio waiting for user click/keypress."));
+    }
+}
+
+// --- 3. UTILITIES ---
+function drawCircle(x, y, radius, color, fill=true, lineWidth=2) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    if (fill) { ctx.fillStyle = color; ctx.fill(); } 
+    else { ctx.lineWidth = lineWidth; ctx.strokeStyle = color; ctx.stroke(); }
+}
+
+function project(tx, ty, z) {
+    let camX = (playerX - WIDTH / 2) * 0.5;
+    let camY = (playerY - HEIGHT / 2) * 0.5;
+    let vpX = WIDTH / 2 - camX;
+    let vpY = HEIGHT / 2 - camY;
+    let factor = 100 / (z + 1);
+    return { 
+        x: (tx - WIDTH / 2) * factor + vpX, 
+        y: (ty - HEIGHT / 2) * factor + vpY, 
+        factor: factor 
+    };
+}
+
+// --- 4. GAME CLASSES ---
+class RadioSystem {
+    constructor() {
+        this.messages = {
+            "start": ["COMMAND: Good morning, aviators.", "MAVERICK: I feel the need for speed!", "ICEMAN: You're everyone's problem, Maverick."],
+            "lock": ["GOOSE: I've got a lock! Smoke 'em!", "MAVERICK: Taking the shot."],
+            "kill": ["MAVERICK: Splash one MiG!", "GOOSE: Great balls of fire!", "ICEMAN: That's the way it's done."],
+            "dodge": ["MAVERICK: I'm going to hit the brakes!", "GOOSE: Watch the canopy!"],
+            "hit": ["GOOSE: We're taking fire! We're hit!", "COMMAND: Evasive maneuvers!"],
+            "boss_appear": ["COMMAND: Warning! Massive bogey on radar!", "ICEMAN: It's time to earn your wings."],
+            "boss_kill": ["COMMAND: Target neutralized. Excellent work.", "MAVERICK: Mission accomplished."],
+            "next_level": ["COMMAND: Area clear. Pushing to the next sector.", "MAVERICK: Roger that. Increasing throttle!"]
+        };
+        this.currentText = ""; this.displayStart = 0; this.duration = 3000;
+        this.isLevelingUp = false;
+    }
+    triggerEvent(eventType) {
+        let now = Date.now();
+        if (now - this.displayStart > this.duration && this.messages[eventType]) {
+            let options = this.messages[eventType];
+            this.currentText = options[Math.floor(Math.random() * options.length)];
+            this.displayStart = now;
+            if(eventType === "next_level") this.isLevelingUp = true;
+        }
+    }
+    forceTrigger(eventType) {
+        if (this.messages[eventType]) {
+            this.currentText = this.messages[eventType][Math.floor(Math.random() * this.messages[eventType].length)];
+            this.displayStart = Date.now();
+        }
+    }
+    draw() {
+        let now = Date.now();
+        if (now - this.displayStart < this.duration) {
+            ctx.fillStyle = "rgba(0, 0, 0, 0.7)"; ctx.fillRect(0, HEIGHT - 50, WIDTH, 50);
+            let charsToShow = Math.min(this.currentText.length, Math.floor((now - this.displayStart) / 30));
+            ctx.fillStyle = GREEN; ctx.font = "bold 20px Courier New"; ctx.textAlign = "center";
+            ctx.fillText(this.currentText.substring(0, charsToShow), WIDTH / 2, HEIGHT - 18);
+        } else if (this.isLevelingUp) {
+            this.isLevelingUp = false;
+            startNextLevel();
+        }
+    }
+}
+
+class Particle {
+    constructor(x, y) {
+        this.x = x; this.y = y;
+        let angle = Math.random() * Math.PI * 2; let speed = Math.random() * 4 + 2;
+        this.vx = Math.cos(angle) * speed; this.vy = Math.sin(angle) * speed;
+        this.life = 255; this.size = Math.floor(Math.random() * 6) + 3;
+    }
+    update() { this.x += this.vx; this.y += this.vy; this.life -= 10; }
+    draw() {
+        if (this.life > 0) {
+            ctx.fillStyle = this.life > 150 ? YELLOW : (this.life > 50 ? ORANGE : "#666");
+            ctx.fillRect(this.x, this.y, this.size, this.size);
+        }
+    }
+}
+
+class Cloud {
+    constructor() { this.reset(); this.z = Math.random() * 140 + 10; }
+    reset() { this.z = 150; this.tx = Math.random() * 2000 - 600; this.ty = Math.random() * 450 - 400; this.speed = Math.random() * 1 + 0.5; }
+    update() { this.z -= this.speed; if (this.z <= 0) this.reset(); }
+    draw() {
+        let p = project(this.tx, this.ty, this.z);
+        let w = 120 * p.factor; let h = 40 * p.factor;
+        ctx.fillStyle = "#F0F0FF"; ctx.beginPath(); ctx.ellipse(p.x, p.y, w/2, h/2, 0, 0, Math.PI * 2); ctx.fill();
+    }
+}
+
+class OceanGrid {
+    constructor() { this.scrollZ = 0; this.gridSpacing = 10; }
+    update() { this.scrollZ += 2.0; if (this.scrollZ > this.gridSpacing) this.scrollZ -= this.gridSpacing; }
+    draw() {
+        let horizonY = HEIGHT / 2 - (playerY - HEIGHT / 2) * 0.5;
+        ctx.fillStyle = "#0A1432"; ctx.fillRect(0, horizonY, WIDTH, HEIGHT);
+        ctx.strokeStyle = "#0096C8"; ctx.lineWidth = 1; ctx.beginPath();
+        let vpX = WIDTH / 2 - (playerX - WIDTH / 2) * 0.5;
+        for (let x = -2000; x < 2000; x += 100) { ctx.moveTo(x + vpX, horizonY); ctx.lineTo(x * 100 + vpX, 4000 + horizonY); }
+        for (let i = 1; i < 20; i++) {
+            let z = (i * this.gridSpacing) - this.scrollZ;
+            if (z > 0.1) { let y2d = (40 * (100 / z)) + horizonY; if (y2d < HEIGHT) { ctx.moveTo(0, y2d); ctx.lineTo(WIDTH, y2d); } }
+        }
+        ctx.stroke();
+    }
+}
+
+class Terrain {
+    constructor() { this.reset(); this.z = Math.random() * 100 + 50; }
+    reset() { this.z = 100; this.tx = Math.random() > 0.5 ? (Math.random() * 400 - 300) : (Math.random() * 400 + 700); this.active = true; }
+    update() { this.z -= 2.0; if (this.z <= 0) this.reset(); }
+    draw() {
+        if (!this.active) return;
+        let p = project(this.tx, HEIGHT / 2, this.z); let w = 40 * p.factor; let h = 100 * p.factor;
+        ctx.fillStyle = "#50463C"; ctx.beginPath(); ctx.moveTo(p.x, p.y + h); ctx.lineTo(p.x - w, p.y); ctx.lineTo(p.x + w, p.y); ctx.closePath(); ctx.fill();
+    }
+}
+
+class PlayerMissile {
+    constructor(x, y, target) { this.x = x; this.y = y; this.z = 1; this.target = target; }
+    update() {
+        this.z += 2.5;
+        if (this.target && this.target.active) {
+            let dx = this.target.screenX - this.x; let dy = this.target.screenY - this.y;
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist > 0) { this.x += (dx / dist) * 10; this.y += (dy / dist) * 10; }
+        }
+    }
+    draw() { drawCircle(this.x, this.y, Math.max(2, 15 * (1/this.z)), GREEN); }
+}
+
+class EnemyMissile {
+    constructor(tx, ty, z) { this.tx = tx; this.ty = ty; this.z = z; this.screenX = 0; this.screenY = 0; this.active = true; }
+    update() {
+        this.z -= 2.0; if (this.z <= 0) this.active = false;
+        let p = project(this.tx, this.ty, this.z); this.screenX = p.x; this.screenY = p.y;
+    }
+    draw() {
+        if (!this.active) return;
+        let size = Math.max(2, 10 * (100 / (this.z + 1)));
+        drawCircle(this.screenX, this.screenY, size, ORANGE);
+        drawCircle(this.screenX, this.screenY, size/2, YELLOW);
+    }
+}
+
+class MiGEnemy {
+    constructor() { this.reset(); this.screenX = 0; this.screenY = 0; }
+    reset() { this.z = Math.random() * 50 + 100; this.tx = Math.random() * 600 + 100; this.ty = Math.random() * 200 + 50; this.lockTimer = 0; this.isLocked = false; this.active = true; }
+    update(enemyMissiles) {
+        if (!this.active) return;
+        this.z -= 1.2; if (this.z <= 0) this.reset();
+        let p = project(this.tx, this.ty, this.z); this.screenX = p.x; this.screenY = p.y;
+        if (this.z > 20 && this.z < 80 && Math.random() < 0.01) enemyMissiles.push(new EnemyMissile(this.tx, this.ty, this.z));
+    }
+    draw() {
+        if (!this.active) return;
+        let factor = 100 / (this.z + 1);
+        if (imgMiG.complete && imgMiG.naturalWidth !== 0) {
+            let imgW = Math.max(1, imgMiG.width * factor * 0.15);
+            let imgH = Math.max(1, imgMiG.height * factor * 0.15);
+            ctx.drawImage(imgMiG, this.screenX - imgW/2, this.screenY - imgH/2, imgW, imgH);
+        } else {
+            ctx.fillStyle = "#333";
+            ctx.fillRect(this.screenX - 15 * factor, this.screenY - 5 * factor, 30 * factor, 10 * factor);
+        }
+    }
+}
+
+class Boss {
+    constructor() { this.reset(); }
+    reset() {
+        this.z = 150; this.active = false; this.isDestroyed = false;
+        this.engines = [
+            {tx: 300, ty: 200, active: true, lockTimer: 0, isLocked: false, screenX: 0, screenY: 0},
+            {tx: 500, ty: 200, active: true, lockTimer: 0, isLocked: false, screenX: 0, screenY: 0}
+        ];
+    }
+    update(enemyMissiles) {
+        if (!this.active) return;
+        if (this.z > 50) this.z -= 0.5;
+        for (let e of this.engines) {
+            let p = project(e.tx, e.ty, this.z); e.screenX = p.x; e.screenY = p.y;
+            if (e.active && Math.random() < 0.03) enemyMissiles.push(new EnemyMissile(e.tx, e.ty, this.z));
+        }
+    }
+    draw() {
+        if (!this.active) return;
+        let p = project(WIDTH/2, 200, this.z);
+        
+        if (imgBoss.complete && imgBoss.naturalWidth !== 0) {
+            let imgW = imgBoss.width * p.factor * 0.8; 
+            let imgH = imgBoss.height * p.factor * 0.8;
+            ctx.drawImage(imgBoss, p.x - imgW/2, p.y - imgH/2, imgW, imgH);
+        } else {
+            let w = 180 * p.factor; let h = 80 * p.factor;
+            ctx.fillStyle = "#323232"; ctx.beginPath(); ctx.ellipse(p.x, p.y, w, h, 0, 0, Math.PI * 2); ctx.fill();
+        }
+
+        for (let e of this.engines) if (e.active) drawCircle(e.screenX, e.screenY, 20 * p.factor, RED);
+    }
+}
+
+// --- 5. GLOBAL GAME STATE ---
+let gameState = "menu";
+let currentGameLevel = 1;
+let playerX = WIDTH / 2, playerY = HEIGHT / 2;
+let score = 0, combo = 1, comboTimer = 0, playerHealth = 100;
+let screenShake = 0, f14BankAngle = 0; 
+let isRolling = false, rollAngle = 0, rollDirection = 1;
+
+// --- NEW KILLS TRACKER ---
+let planesShotDown = 0; 
+
+let ocean = new OceanGrid(), clouds = Array.from({length: 8}, () => new Cloud());
+let enemies = [], terrains = [], boss = new Boss(), radio = new RadioSystem();
+let playerMissiles = [], enemyMissiles = [], particles = [];
+
+function startNextLevel() {
+    currentGameLevel++;
+    planesShotDown = 0; // RESET KILLS ON NEXT LEVEL
+    playSongForLevel(currentGameLevel);
+    boss.reset();
+    enemies = Array.from({length: 2 + currentGameLevel}, () => new MiGEnemy());
+    playerMissiles = []; enemyMissiles = [];
+}
+
+const keys = {};
+window.addEventListener("keydown", (e) => {
+    keys[e.code] = true;
+    if (e.code === "Enter" && (gameState === "menu" || gameState === "game_over")) {
+        gameState = "playing"; score = 0; currentGameLevel = 1; playerHealth = 100;
+        planesShotDown = 0; // RESET KILLS ON NEW GAME
+        playSongForLevel(currentGameLevel);
+        enemies = Array.from({length: 3}, () => new MiGEnemy());
+        terrains = Array.from({length: 2}, () => new Terrain());
+        boss.reset(); radio.forceTrigger("start");
+    }
+    if (e.code === "Space" && gameState === "playing") {
+        let target = enemies.find(e => e.active && e.isLocked) || 
+                     (boss.active ? boss.engines.find(eng => eng.active && eng.isLocked) : null);
+        playerMissiles.push(new PlayerMissile(playerX, playerY, target));
+    }
+    if (e.code === "KeyZ" && gameState === "playing" && !isRolling) {
+        isRolling = true; rollAngle = 0; rollDirection = keys["ArrowLeft"] ? -1 : 1; 
+        radio.forceTrigger("dodge");
+    }
+});
+window.addEventListener("keyup", (e) => keys[e.code] = false);
+
+// --- 6. CORE GAME LOOP ---
+function gameLoop() {
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    
+    let shakeX = screenShake > 0 ? (Math.random() * screenShake * 2 - screenShake) : 0;
+    let shakeY = screenShake > 0 ? (Math.random() * screenShake * 2 - screenShake) : 0;
+    if (screenShake > 0) screenShake--;
+
+    ctx.save(); ctx.translate(shakeX, shakeY);
+    ocean.update(); ocean.draw();
+    for (let c of clouds) { c.update(); c.draw(); }
+
+    if (gameState === "playing") {
+        if (isRolling) { rollAngle += 0.4; if (rollAngle >= Math.PI * 2) { isRolling = false; rollAngle = 0; } }
+        if (keys["ArrowLeft"]) playerX -= 7; if (keys["ArrowRight"]) playerX += 7;
+        if (keys["ArrowUp"]) playerY -= 7; if (keys["ArrowDown"]) playerY += 7;
+        playerX = Math.max(60, Math.min(WIDTH - 60, playerX)); playerY = Math.max(60, Math.min(HEIGHT - 60, playerY));
+
+        if (comboTimer > 0) comboTimer--; else combo = 1;
+        
+        // --- NEW BOSS TRIGGER: Checks for 17 plane kills instead of score ---
+        if (planesShotDown >= 17 && !boss.active && !boss.isDestroyed) {
+            boss.active = true; 
+            enemies.forEach(e => e.active = false); 
+            radio.forceTrigger("boss_appear");
+        }
+
+        for (let t of terrains) {
+            t.update(); t.draw();
+            let p = project(t.tx, HEIGHT/2, t.z);
+            if (t.z < 5 && t.active && Math.abs(playerX - p.x) < 80 && !isRolling) { 
+                playerHealth -= 20; screenShake = 20; t.reset(); radio.triggerEvent("hit"); 
+            }
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) { 
+            particles[i].update(); particles[i].draw(); 
+            if (particles[i].life <= 0) particles.splice(i, 1); 
+        }
+
+        let anyLocked = false;
+        if (boss.active) boss.update(enemyMissiles);
+
+        let targets = boss.active ? boss.engines : enemies;
+        for (let t of targets) {
+            if (t.update) t.update(enemyMissiles); if (!t.active) continue;
+            if (Math.sqrt((playerX - t.screenX)**2 + (playerY - t.screenY)**2) < 60) {
+                t.lockTimer++; if (t.lockTimer > 30) { t.isLocked = true; anyLocked = true; }
+            } else { t.lockTimer = 0; t.isLocked = false; }
+        }
+
+        if (boss.active) boss.draw(); else enemies.forEach(e => e.draw());
+
+        for (let i = enemyMissiles.length - 1; i >= 0; i--) {
+            let em = enemyMissiles[i]; em.update(); em.draw();
+            if (em.z < 5 && Math.sqrt((playerX - em.screenX)**2 + (playerY - em.screenY)**2) < 40 && !isRolling) {
+                playerHealth -= 10; screenShake = 15; radio.triggerEvent("hit"); enemyMissiles.splice(i, 1);
+            } else if (!em.active) enemyMissiles.splice(i, 1);
+        }
+
+        for (let i = playerMissiles.length - 1; i >= 0; i--) {
+            let m = playerMissiles[i]; m.update(); m.draw();
+            if (m.z > 120) { playerMissiles.splice(i, 1); continue; }
+            for (let t of targets) {
+                if (t.active && m.z > 80 && Math.sqrt((m.x - t.screenX)**2 + (m.y - t.screenY)**2) < 50) {
+                    t.active = false; playerMissiles.splice(i, 1);
+                    for(let p=0; p<20; p++) particles.push(new Particle(t.screenX, t.screenY));
+                    score += 100 * combo; combo++; comboTimer = 180; radio.triggerEvent("kill");
+                    
+                    // --- NEW KILL TRACKING LOGIC ---
+                    // Only add to the plane kills counter if the boss isn't active
+                    if (!boss.active) {
+                        planesShotDown++; 
+                    }
+
+                    if (t.reset) t.reset();
+                    break;
+                }
+            }
+        }
+
+        if (boss.active && !boss.engines.some(e => e.active)) {
+            boss.active = false; boss.isDestroyed = true;
+            radio.forceTrigger("boss_kill");
+            setTimeout(() => radio.triggerEvent("next_level"), 3000);
+        }
+
+        let targetBank = keys["ArrowLeft"] ? -0.5 : (keys["ArrowRight"] ? 0.5 : 0);
+        f14BankAngle += (targetBank - f14BankAngle) * 0.1;
+        let drawAngle = f14BankAngle + (isRolling ? rollAngle * rollDirection : 0);
+
+        if (imgF14.complete && imgF14.naturalWidth !== 0) {
+            ctx.save(); ctx.translate(playerX, playerY + 40); ctx.rotate(drawAngle);
+            ctx.drawImage(imgF14, -120, -120, 240, 240); ctx.restore(); 
+        } else {
+            ctx.save(); ctx.translate(playerX, playerY); ctx.rotate(drawAngle);
+            ctx.fillStyle = "#A0A0A0"; ctx.beginPath(); ctx.moveTo(0, -40); ctx.lineTo(-35, 35); ctx.lineTo(35, 35); ctx.closePath(); ctx.fill();
+            ctx.restore();
+        }
+
+        drawCircle(playerX, playerY, 60, anyLocked ? RED : GREEN, false, 2);
+        for (let t of targets) if (t.active && t.lockTimer > 0) { 
+            ctx.strokeStyle = t.isLocked ? RED : YELLOW; ctx.strokeRect(t.screenX-35, t.screenY-35, 70, 70); 
+        }
+
+        if (playerHealth <= 0) gameState = "game_over";
+    }
+    ctx.restore(); 
+
+    if (gameState === "playing") {
+        ctx.fillStyle = YELLOW; ctx.font = "bold 20px Courier New"; ctx.textAlign = "left";
+        // Let's add the kill counter to the HUD so the player knows how close they are!
+        ctx.fillText(`SCORE: ${score}  LVL: ${currentGameLevel}  KILLS: ${planesShotDown}/17`, 20, 40);
+        ctx.fillStyle = RED; ctx.fillRect(WIDTH - 220, 20, 200, 20);
+        ctx.fillStyle = GREEN; ctx.fillRect(WIDTH - 220, 20, Math.max(0, playerHealth * 2), 20);
+        radio.draw();
+    } else if (gameState === "menu") {
+        if (imgSplash.complete && imgSplash.naturalWidth !== 0) {
+            ctx.drawImage(imgSplash, 0, 0, WIDTH, HEIGHT);
+        } else {
+            ctx.fillStyle = YELLOW; ctx.font = "bold 48px Courier New"; ctx.textAlign = "center";
+            ctx.fillText("TOP GUN: ARCADE", WIDTH/2, HEIGHT/3);
+        }
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)"; 
+        ctx.fillRect(0, HEIGHT - 80, WIDTH, 60);
+        ctx.fillStyle = YELLOW; ctx.font = "bold 24px Courier New"; ctx.textAlign = "center";
+        ctx.fillText("CLICK SCREEN & PRESS ENTER", WIDTH/2, HEIGHT - 42);
+
+    } else if (gameState === "game_over") {
+        ctx.fillStyle = RED; ctx.font = "bold 48px Courier New"; ctx.textAlign = "center";
+        ctx.fillText("MISSION FAILED", WIDTH/2, HEIGHT/3);
+        ctx.fillStyle = YELLOW; ctx.fillText("PRESS ENTER TO REFLY", WIDTH/2, HEIGHT/2);
+    }
+    requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
